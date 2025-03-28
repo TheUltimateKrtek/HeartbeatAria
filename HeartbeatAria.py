@@ -40,8 +40,8 @@ class Stream:
         return struct.unpack("<Q", bytes)[0]
     
     def read_str(self, n=1):
-        bytes = self.read(n)
-        return self.read(bytes).decode('iso-8859-1')
+        bytes = self.read(bytes)
+        return bytes.decode('iso-8859-1')
 
 class Header:
     def __init__(self, stream:Stream):
@@ -51,9 +51,6 @@ class Header:
         self.version = stream.read_byte()
         self.protocol = stream.read_byte()
         reserved = stream.read(6)
-
-        print("ID:", self.id)
-        print("Length:", self.length)
 
 class Pointer:
     def __init__(self, stream:Stream):
@@ -88,7 +85,7 @@ class Section:
     @staticmethod
     def parse(stream:Stream, pointer:Pointer=None):
         if pointer is not None:
-            stream.jump(pointer.index)
+            stream.jump(pointer.index - 1)
         header = Header(stream)
         
         if header.id == 0:
@@ -135,6 +132,7 @@ class Section1(Section):
             self.tags.append(tag)
 
 
+
 class SectionUnknown(Section):
     def __init__(self, header:Header, stream:Stream):
         super().__init__(header)
@@ -154,6 +152,9 @@ class SCPFile:
 class HeartbeatAria:
     def __init__(self, path:str):
         file = SCPFile(Stream(path))
+        if file.section0.has_section(1):
+            for t in file.sections[2].tags:
+                print(t.tag)
         
 
 HeartbeatAria("Signal.scp")
