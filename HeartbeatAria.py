@@ -50,49 +50,110 @@ class Header:
         self.length = stream.read_int()
         self.version = stream.read_byte()
         self.protocol = stream.read_byte()
+        reserved = stream.read(6)
 
-class Section(ABC):
-    def __new__(cls, stream:Stream):
-        header = Header(Stream)
+        print("ID:", self.id)
+        print("Length:", self.length)
+
+class Pointer:
+    def __init__(self, stream:Stream):
+        self.id = stream.read_short()
+        self.length = stream.read_int()
+        self.index = stream.read_int()
+
+class Tag:
+    def __init__(self, stream:Stream):
+        self.tag = stream.read_byte()
+        self.length = stream.read_short()
+
+        if self.length > 0:
+            self.data = stream.read(self.length)
+
+class LeadIdentification:
+    def __init__(self, stream:Stream):
+        self.start = stream.read_int()
+        self.end = stream.read_int()
+        self.id = stream.read_byte()
+
+    def __str__(self):
+        return '{0} ({1})'.format(self.id, self.sample_count())
+
+    def sample_count(self):
+        return self.end - self.start + 1
+
+class Section:
+    def __init__(self, header:Header, pointers:list[Pointer]=[]):
+        self.header = header
+    
+    @staticmethod
+    def parse(stream:Stream, pointer:Pointer=None):
+        if pointer is not None:
+            stream.jump(pointer.index)
+        header = Header(stream)
         
         if header.id == 0:
-            return Section0(header)
+            return Section0(header, stream)
+        elif header.id == 1:
+            return Section1(header, stream)
         else:
-            return SectionUnknown(header)
+            return SectionUnknown(header, stream)
 
-        
-# TODO: Sections
 class Section0(Section):
-    def __init__(self, stream:Stream, header:Header):
-        self.header = header
+    def __init__(self, header:Header, stream:Stream):
+        super().__init__(header)
 
-        section_count = 12 + header.length - 120 - 16
+        self.pointers = []
 
-        self.section_ids = []
-        self.section_lengths = []
-        self.section_indexes = []
-        for _ in range(section_count):
-            self.section_ids.append(stream.read_short())
-            self.section_lengths.append(stream.read_int())
-            self.section_indexes.append(stream.read_int())
+        count = (header.length - 120 - 16) // 10 + 12
+        for _ in range(0, count):
+            pointer = Pointer(stream)
+            if pointer.length == 0:
+                continue
+            self.pointers.append(pointer)
+    
+    def has_section(self, section_id):
+        pointer = self.pointer_for_section(section_id)
+        if pointer is None:
+            return False
+        return pointer.length > 0
+
+    def pointer_for_section(self, section_id):
+        for pointer in self.pointers:
+            if pointer.id == section_id:
+                return pointer
+        return None
+
+class Section1(Section):
+    def __init__(self, header:Header, stream:Stream):
+        super().__init__(header)
+        
+        self.tags = []
+        length = header.length - 16
+        while length > 0:
+            tag = Tag(stream)
+            length -= tag.length
+            self.tags.append(tag)
+
 
 class SectionUnknown(Section):
-    def __init__(self, stream:Stream, header:Header):
-        self.header = header
+    def __init__(self, header:Header, stream:Stream):
+        super().__init__(header)
 
-        self.data = stream.read(header.length - 120 - 16)
+        self.data = stream.read(header.length - 16)
 
 class SCPFile:
-    def __init__(self, path:str):
-        stream = Stream(path)
-        
+    def __init__(self, stream:Stream):
         self.crc = stream.read_short()
         self.length = stream.read_int()
-        
         self.sections = []
-        self.sections.append(Section(stream))
+        self.section0 = Section.parse(stream)
+        self.sections.append(self.section0)
+        for pointer in self.section0.pointers:
+            self.sections.append(Section.parse(stream, pointer))
 
-        # TODO
+class HeartbeatAria:
+    def __init__(self, path:str):
+        file = SCPFile(Stream(path))
+        
 
-print(SCPFile("Signal").sections)
-    
+HeartbeatAria("Signal.scp")
