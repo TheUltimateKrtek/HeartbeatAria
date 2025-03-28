@@ -276,6 +276,7 @@ class Section7(Section):
             self.pace_widths.append(self.reader.read_short())
 
 class SectionUnknown(Section):
+    '''Unknown section representation.'''
     def __init__(self, header:Header, stream:Stream):
         super().__init__(header)
 
