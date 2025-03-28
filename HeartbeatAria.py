@@ -80,8 +80,21 @@ class LeadIdentification:
         return self.end - self.start + 1
 
 class Section:
+    _PARSERS = {}
     def __init__(self, header:Header, stream:Stream=None):
         self.header = header
+    
+        @staticmethod
+        def register_parser(id, cls):
+            Section._PARSERS[id] = cls
+
+        @staticmethod
+        def section_parser(id):
+            """Decorator to register a class as a section parser for a given section ID."""
+            def decorator(cls):
+                Section.register_parser(id, cls)
+                return cls
+            return decorator
     
     @staticmethod
     def parse(stream:Stream, pointer:Pointer, file:SCPFile):
@@ -89,28 +102,26 @@ class Section:
             stream.jump(pointer.index - 1)
         header = Header(stream)
         
-        if header.id == 0:
-            return Section0(header, stream, file)
-        elif header.id == 1:
-            return Section1(header, stream, file)
-        elif header.id == 2:
-            return Section2(header, stream, file)
-        elif header.id == 3:
-            return Section3(header, stream, file)
-        elif header.id == 4:
-            return Section4(header, stream, file)
-        elif header.id == 5:
-            return Section5(header, stream, file)
-        elif header.id == 6:
-            return Section6(header, stream, file)
-        elif header.id == 7:
-            return Section7(header, stream, file)
+        Parser = Section._PARSERS.get(header.id)
+        if Parser is not None:
+            return Parser(header, stream, file)
         else:
             return SectionUnknown(header, stream)
+    
+    @staticmethod
+    def register_parser(id, cls):
+        Section._PARSERS[id] = cls
 
+    @staticmethod
+    def parser(id):
+        """Decorator to register a class as a section parser for a given section ID."""
+        def decorator(cls):
+            Section.register_parser(id, cls)
+            return cls
+        return decorator
+
+@Section.parser(0)
 class Section0(Section):
-    _PARSERS = {}
-
     '''Section 0 contains the pointers to each of the sections in the SCP file.'''
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
         super().__init__(header)
@@ -135,19 +146,8 @@ class Section0(Section):
             if pointer.id == section_id:
                 return pointer
         return None
-    
-    @staticmethod
-    def register_parser(id, cls):
-        Section._PARSERS[id] = cls
-    
-    @staticmethod
-    def section_parser(id):
-        """Decorator to register a class as a section parser for a given section ID."""
-        def decorator(cls):
-            Section.register_parser(id, cls)
-            return cls
-        return decorator
 
+@Section.parser(1)
 class Section1(Section):
     '''Section 1 is the Table of Contents (ToC) which contains the labels for leads,
         ECG signals, and related metadata.'''
@@ -161,6 +161,7 @@ class Section1(Section):
             length -= tag.length
             self.tags.append(tag)
 
+@Section.parser(2)
 class Section2(Section):
     '''Section 2 contains data on the number of leads, their types, and other lead-related information.'''
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
@@ -169,6 +170,7 @@ class Section2(Section):
         self.huffman_table_count = stream.read_short()
         self.code_struct_count = stream.read_short()
 
+@Section.parser(3)
 class Section3(Section):
     '''Section 3 contains information about reference beats, flags, and the number of leads.'''
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
@@ -185,6 +187,7 @@ class Section3(Section):
             lead = LeadIdentification(stream)
             self.leads.append(lead)
 
+@Section.parser(4)
 class Section4(Section):
     '''Section 4 contains information about the reference beat, fiducial points, and QRS complexes.'''
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
@@ -194,6 +197,7 @@ class Section4(Section):
         self.fiducal_point_sample_number = stream.read_short()
         self.qrs_count = stream.read_short()
 
+@Section.parser(5)
 class Section5(Section):
     '''Section 5 contains data related to the ECG signal samples for each lead.'''
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
@@ -219,6 +223,7 @@ class Section5(Section):
                 sample_count -= 1
             self.samples.append(samples)
 
+@Section.parser(6)
 class Section6(Section):
     '''Section 6 contains metadata or other data related to the ECG signal. This could include the number of signals, their processing parameters, etc.'''
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
@@ -243,6 +248,7 @@ class Section6(Section):
                 sample_count -= 1
             self.samples.append(samples)
 
+@Section.parser(7)
 class Section7(Section):
     '''Section 7 contains the actual signal data.'''
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
@@ -294,9 +300,7 @@ class SCPFile:
 class HeartbeatAria:
     def __init__(self, path:str):
         file = SCPFile(Stream(path))
-        if file.section0.has_section(1):
-            for t in file.sections[2].tags:
-                print(t.tag)
+        print(file.sections)
         
 
 HeartbeatAria("Signal.scp")
