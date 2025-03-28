@@ -40,7 +40,7 @@ class Stream:
         return struct.unpack("<Q", bytes)[0]
     
     def read_str(self, n=1):
-        bytes = self.read(bytes)
+        bytes = self.read(n)
         return bytes.decode('iso-8859-1')
 
 class Header:
@@ -62,6 +62,7 @@ class Tag:
     def __init__(self, stream:Stream):
         self.tag = stream.read_byte()
         self.length = stream.read_short()
+        self.data = []
 
         if self.length > 0:
             self.data = stream.read(self.length)
@@ -79,24 +80,39 @@ class LeadIdentification:
         return self.end - self.start + 1
 
 class Section:
-    def __init__(self, header:Header, pointers:list[Pointer]=[]):
+    def __init__(self, header:Header, stream:Stream=None):
         self.header = header
     
     @staticmethod
-    def parse(stream:Stream, pointer:Pointer=None):
+    def parse(stream:Stream, pointer:Pointer, file:SCPFile):
         if pointer is not None:
             stream.jump(pointer.index - 1)
         header = Header(stream)
         
         if header.id == 0:
-            return Section0(header, stream)
+            return Section0(header, stream, file)
         elif header.id == 1:
-            return Section1(header, stream)
+            return Section1(header, stream, file)
+        elif header.id == 2:
+            return Section2(header, stream, file)
+        elif header.id == 3:
+            return Section3(header, stream, file)
+        elif header.id == 4:
+            return Section4(header, stream, file)
+        elif header.id == 5:
+            return Section5(header, stream, file)
+        elif header.id == 6:
+            return Section6(header, stream, file)
+        elif header.id == 7:
+            return Section7(header, stream, file)
         else:
             return SectionUnknown(header, stream)
 
 class Section0(Section):
-    def __init__(self, header:Header, stream:Stream):
+    _PARSERS = {}
+
+    '''Section 0 contains the pointers to each of the sections in the SCP file.'''
+    def __init__(self, header:Header, stream:Stream, file:SCPFile):
         super().__init__(header)
 
         self.pointers = []
@@ -119,9 +135,23 @@ class Section0(Section):
             if pointer.id == section_id:
                 return pointer
         return None
+    
+    @staticmethod
+    def register_parser(id, cls):
+        Section._PARSERS[id] = cls
+    
+    @staticmethod
+    def section_parser(id):
+        """Decorator to register a class as a section parser for a given section ID."""
+        def decorator(cls):
+            Section.register_parser(id, cls)
+            return cls
+        return decorator
 
 class Section1(Section):
-    def __init__(self, header:Header, stream:Stream):
+    '''Section 1 is the Table of Contents (ToC) which contains the labels for leads,
+        ECG signals, and related metadata.'''
+    def __init__(self, header:Header, stream:Stream, file:SCPFile):
         super().__init__(header)
         
         self.tags = []
@@ -131,7 +161,113 @@ class Section1(Section):
             length -= tag.length
             self.tags.append(tag)
 
+class Section2(Section):
+    '''Section 2 contains data on the number of leads, their types, and other lead-related information.'''
+    def __init__(self, header:Header, stream:Stream, file:SCPFile):
+        super().__init__(header)
 
+        self.huffman_table_count = stream.read_short()
+        self.code_struct_count = stream.read_short()
+
+class Section3(Section):
+    '''Section 3 contains information about reference beats, flags, and the number of leads.'''
+    def __init__(self, header:Header, stream:Stream, file:SCPFile):
+        super().__init__(header)
+
+        self.lead_count = stream.read_short()
+        self.tags = stream.read_short()
+        
+        self.reference_beat_substring_tag = bool(self.tags >> 1 & 1)
+        
+        lead_count = self.tags >> 3 & 0b1111
+        self.leads = []
+        for _ in range(0, lead_count):
+            lead = LeadIdentification(stream)
+            self.leads.append(lead)
+
+class Section4(Section):
+    '''Section 4 contains information about the reference beat, fiducial points, and QRS complexes.'''
+    def __init__(self, header:Header, stream:Stream, file:SCPFile):
+        super().__init__(header)
+
+        self.reference_beat_type = stream.read_short()
+        self.fiducal_point_sample_number = stream.read_short()
+        self.qrs_count = stream.read_short()
+
+class Section5(Section):
+    '''Section 5 contains data related to the ECG signal samples for each lead.'''
+    def __init__(self, header:Header, stream:Stream, file:SCPFile):
+        super().__init__(header)
+
+        number_of_leads = len(file.get_section(3).leads)
+
+        self.average_measurement = stream.read_short()
+        self.sample_time_interval = stream.read_short()
+        self.sample_encoding = stream.read_byte()
+        reserved = stream.read_byte()
+
+        lead_lengths = []
+        for _ in range(0, number_of_leads):
+            lead_lengths.append(stream.read_short())
+        
+        self.samples = []
+        for length in lead_lengths:
+            samples = []
+            sample_count = length / 2
+            while sample_count > 0:
+                samples.append(stream.read_short())
+                sample_count -= 1
+            self.samples.append(samples)
+
+class Section6(Section):
+    '''Section 6 contains metadata or other data related to the ECG signal. This could include the number of signals, their processing parameters, etc.'''
+    def __init__(self, header:Header, stream:Stream, file:SCPFile):
+        super().__init__(header)
+        
+        number_of_leads = len(file.get_section(3).leads)
+        self.average_measurement = stream.read_short()
+        self.sample_time_interval = stream.read_short()
+        self.sample_encoding = stream.read_byte()
+        self.bimodal_compression = stream.read_byte()
+
+        lead_lengths = []
+        for _ in range(0, number_of_leads):
+            lead_lengths.append(stream.read_short())
+        
+        self.samples = []
+        for length in lead_lengths:
+            samples = []
+            sample_count = length / 2
+            while sample_count > 0:
+                samples.append(stream.read_short())
+                sample_count -= 1
+            self.samples.append(samples)
+
+class Section7(Section):
+    '''Section 7 contains the actual signal data.'''
+    def __init__(self, header:Header, stream:Stream, file:SCPFile):
+        super().__init__(header)
+
+        self.reference_count = stream.read_byte()
+        self.pace_count = stream.read_byte()
+        self.rr_interval = stream.read_short()
+        self.pp_interval = stream.read_short()
+        
+        self.pace_times = []
+        self.pace_amplitudes = []
+        self.pace_types = []
+        self.pace_sources = []
+        self.pace_indexes = []
+        self.pace_widths = []
+        for i in range(0, self.pace_count):
+            self.pace_times.append(stream.read_short())
+            self.pace_amplitudes.append(stream.read_short())
+        
+        for i in range(0, self.pace_count):
+            self.pace_types.append(self.reader.read_byte())
+            self.pace_sources.append(self.reader.read_byte())
+            self.pace_indexes.append(self.reader.read_short())
+            self.pace_widths.append(self.reader.read_short())
 
 class SectionUnknown(Section):
     def __init__(self, header:Header, stream:Stream):
@@ -144,10 +280,16 @@ class SCPFile:
         self.crc = stream.read_short()
         self.length = stream.read_int()
         self.sections = []
-        self.section0 = Section.parse(stream)
+        self.section0 = Section.parse(stream, None, self)
         self.sections.append(self.section0)
         for pointer in self.section0.pointers:
-            self.sections.append(Section.parse(stream, pointer))
+            self.sections.append(Section.parse(stream, pointer, self))
+        
+    def get_section(self, id:int) -> Section:
+        for section in self.sections:
+            if section.header.id == id:
+                return section
+        return None
 
 class HeartbeatAria:
     def __init__(self, path:str):
