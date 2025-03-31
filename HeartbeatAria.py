@@ -66,11 +66,12 @@ class Tag:
 
         if self.length > 0:
             self.data = stream.read(self.length)
+    
 
 class LeadIdentification:
     def __init__(self, stream:Stream):
         self.start = stream.read_int()
-        self.end = stream.read_int()
+        self.length = stream.read_int()
         self.id = stream.read_byte()
 
     def __str__(self):
@@ -134,7 +135,12 @@ class Section0(Section):
             if pointer.length == 0:
                 continue
             self.pointers.append(pointer)
-    
+
+        print("Section 0:")
+        print("    Pointer indexes:", [p.index for p in self.pointers])
+        print("    Pointer ids:", [p.id for p in self.pointers])
+        print("    Pointer lengths:", [p.length for p in self.pointers])
+
     def has_section(self, section_id):
         pointer = self.pointer_for_section(section_id)
         if pointer is None:
@@ -160,6 +166,10 @@ class Section1(Section):
             tag = Tag(stream)
             length -= tag.length
             self.tags.append(tag)
+        
+        print("Section 1:")
+        for t in self.tags:
+            print(f"    Tag: {t.tag}, Length: {t.length}, Data: {t.data if len(t.data) < 20 else str(t.data[:20]) + "..."}")
 
 @Section.parser(2)
 class Section2(Section):
@@ -167,8 +177,12 @@ class Section2(Section):
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
         super().__init__(header)
 
-        self.huffman_table_count = stream.read_short()
-        self.code_struct_count = stream.read_short()
+        self.huffman_table_count = stream.read_byte()
+        self.code_struct_count = stream.read_byte()
+        
+        print("Section 2:")
+        print(f"    Huffman table count: {self.huffman_table_count}")
+        print(f"    Code struct count: {self.code_struct_count}")
 
 @Section.parser(3)
 class Section3(Section):
@@ -176,16 +190,27 @@ class Section3(Section):
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
         super().__init__(header)
 
-        self.lead_count = stream.read_short()
-        self.tags = stream.read_short()
+        # Read the lead count (byte 0)
+        self.lead_count = stream.read_byte()
         
-        self.reference_beat_substring_tag = bool(self.tags >> 1 & 1)
+        # Read the lead flags (byte 1) - not needed for now
+        self.lead_flags = stream.read_byte()
         
-        lead_count = self.tags >> 3 & 0b1111
+        # Calculate the number of leads based on the section length
+        lead_count = (header.length - 16) // 9
+        
         self.leads = []
-        for _ in range(0, lead_count):
+        
+        # Iterate over the leads and read the 9-byte chunks
+        for _ in range(lead_count):
             lead = LeadIdentification(stream)
             self.leads.append(lead)
+        
+        # Output the lead data
+        print("Section 3:")
+        for l in self.leads:
+            print(f"    Lead: {l.id}, Start: {l.start}, Length: {l.length}")
+
 
 @Section.parser(4)
 class Section4(Section):
@@ -196,6 +221,11 @@ class Section4(Section):
         self.reference_beat_type = stream.read_short()
         self.fiducal_point_sample_number = stream.read_short()
         self.qrs_count = stream.read_short()
+
+        print("Section 4:")
+        print(f"    Reference beat type: {self.reference_beat_type}")
+        print(f"    Fiducal Point Sample Number: {self.fiducal_point_sample_number}")
+        print(f"    Qrs count: {self.qrs_count}")
 
 @Section.parser(5)
 class Section5(Section):
@@ -223,6 +253,9 @@ class Section5(Section):
                 sample_count -= 1
             self.samples.append(samples)
 
+        print("Section 5:")
+        print("    TODO")
+
 @Section.parser(6)
 class Section6(Section):
     '''Section 6 contains metadata or other data related to the ECG signal. This could include the number of signals, their processing parameters, etc.'''
@@ -247,6 +280,9 @@ class Section6(Section):
                 samples.append(stream.read_short())
                 sample_count -= 1
             self.samples.append(samples)
+
+        print("Section 6:")
+        print("    TODO")
 
 @Section.parser(7)
 class Section7(Section):
@@ -275,6 +311,9 @@ class Section7(Section):
             self.pace_indexes.append(self.reader.read_short())
             self.pace_widths.append(self.reader.read_short())
 
+        print("Section 7:")
+        print("    TODO")
+
 class SectionUnknown(Section):
     '''Unknown section representation.'''
     def __init__(self, header:Header, stream:Stream):
@@ -298,10 +337,10 @@ class SCPFile:
                 return section
         return None
 
-class HeartbeatAria:
+class Data:
     def __init__(self, path:str):
         file = SCPFile(Stream(path))
-        print(file.sections)
-        
+        tags = file.get_section(3).leads
+        print([tag.id for tag in tags])
 
-HeartbeatAria("Signal.scp")
+Data("example.scp")
