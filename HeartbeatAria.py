@@ -19,29 +19,57 @@ class Stream:
     def close(self):
         self._file.close()
     
-    def read(self, bytes=1):
-        res = self._file.read(bytes)
+    def read(self, n=1):
+        res = self._file.read(n)
         return res
     
     def read_byte(self):
-        bytes = self.read(1)
-        return struct.unpack("<B", bytes)[0]
+        data = self.read(1)
+        return struct.unpack("<B", data)[0]
     
     def read_short(self):
-        bytes = self.read(2)
-        return struct.unpack("<H", bytes)[0]
+        data = self.read(2)
+        return struct.unpack("<H", data)[0]
     
     def read_int(self):
-        bytes = self.read(4)
-        return struct.unpack("<I", bytes)[0]
+        data = self.read(4)
+        return struct.unpack("<I", data)[0]
     
     def read_long(self):
-        bytes = self.read(6)
-        return struct.unpack("<Q", bytes)[0]
+        data = self.read(6)
+        return struct.unpack("<Q", data)[0]
     
     def read_str(self, n=1):
-        bytes = self.read(n)
-        return bytes.decode('iso-8859-1')
+        data = self.read(n)
+        return data.decode('iso-8859-1')
+    
+    def read_bits(self):
+        byte = self._file.read(1)
+        if not byte:  # End of file
+            return None
+        return [(byte[0] >> i) & 1 for i in range(7, -1, -1)]  # Extract bits (MSB first)
+
+class HuffmanStreamReader:
+    def __init__(self, stream:Stream, chunk_size:int):
+        self.stream = stream
+        self.chunk_size = chunk_size
+        self.tree = None
+        self.bit_buffer = []
+
+        self.read_tree()
+    
+    def read_tree(self):
+        pass
+
+    def read_bits(self, n=1):
+        while len(self.bit_buffer) < n:
+            for b in self.stream.read_bits():
+                self.bit_buffer.append(b)
+        bits = self.bit_buffer[:n]
+        self.bit_buffer = self.bit_buffer[n:]
+        return bits
+    
+
 
 class Header:
     def __init__(self, stream:Stream):
@@ -66,7 +94,6 @@ class Tag:
 
         if self.length > 0:
             self.data = stream.read(self.length)
-    
 
 class LeadIdentification:
     def __init__(self, stream:Stream):
@@ -170,6 +197,15 @@ class Section1(Section):
         print("Section 1:")
         for t in self.tags:
             print(f"    Tag: {t.tag}, Length: {t.length}, Data: {t.data if len(t.data) < 20 else str(t.data[:20]) + "..."}")
+    
+    def get_tag_contents(self, id:int) -> bytes|list[bytes]:
+        rl = []
+        for tag in self.tags:
+            if tag.tag == id:
+                rl.append(tag.data)
+        if len(rl) == 0: return None
+        if len(rl) == 1: return rl[0]
+        return rl
 
 @Section.parser(2)
 class Section2(Section):
@@ -177,12 +213,12 @@ class Section2(Section):
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
         super().__init__(header)
 
-        self.huffman_table_count = stream.read_byte()
-        self.code_struct_count = stream.read_byte()
+        self.huffman_encoding_type = stream.read_short()
         
         print("Section 2:")
-        print(f"    Huffman table count: {self.huffman_table_count}")
-        print(f"    Code struct count: {self.code_struct_count}")
+        print(f"    Huffman table count: {self.huffman_encoding_type}")
+        if self.huffman_encoding_type != 19999:
+            raise NotImplementedError("Only encoding type 19999 is implemented.")
 
 @Section.parser(3)
 class Section3(Section):
@@ -210,7 +246,6 @@ class Section3(Section):
         print("Section 3:")
         for l in self.leads:
             print(f"    Lead: {l.id}, Start: {l.start}, Length: {l.length}")
-
 
 @Section.parser(4)
 class Section4(Section):
@@ -261,7 +296,7 @@ class Section6(Section):
     '''Section 6 contains metadata or other data related to the ECG signal. This could include the number of signals, their processing parameters, etc.'''
     def __init__(self, header:Header, stream:Stream, file:SCPFile):
         super().__init__(header)
-        
+
         number_of_leads = len(file.get_section(3).leads)
         self.average_measurement = stream.read_short()
         self.sample_time_interval = stream.read_short()
@@ -282,7 +317,9 @@ class Section6(Section):
             self.samples.append(samples)
 
         print("Section 6:")
-        print("    TODO")
+        print(f"    Lead lenths: {lead_lengths}")
+        for lead, sample in zip(file.get_section(3).leads, self.samples):
+            print(f"{len(sample)} samples for lead {lead.id}: {sample[20] if len(sample) > 20 else sample}")
 
 @Section.parser(7)
 class Section7(Section):
@@ -337,10 +374,209 @@ class SCPFile:
                 return section
         return None
 
+class Measurement:
+    class Height:
+        CONVERSION_FACTORS = [
+            [1, 1, 1, 1],
+            [1, 1, 1/2.54, 10],
+            [1, 2.54, 1, 25.4],
+            [1, 0.1, 1/25.4, 1]
+        ]
+        NAMES = ["", "cm", "inch", "mm"]
+
+        def __init__(self, value:int|float, units:int):
+            self._value = value
+            self._units = units
+        
+        def __str__(self):
+            return self.value + ((" " + self.units) if self.units else "")
+        
+        @staticmethod
+        def parse(data) -> Measurement.Height|None:
+            if data is None: return None
+            return Measurement.Height(int.from_bytes(data[:2], data[2]))
+        
+        @property
+        def value(self) -> float:
+            return self._value
+        
+        @property
+        def units_id(self) -> int:
+            return self._units if self._units >= 0 and self._units < len(Measurement.Height.NAMES) else 0
+
+        @property
+        def units(self) -> str:
+            return Measurement.Height.NAMES[self.units_id]
+        
+        @property
+        def is_specified(self) -> bool:
+            return self._value != 0 or self._units != 0
+        
+        def convert(self, units:int|str):
+            if isinstance(units, str):
+                if units not in Measurement.Height.NAMES:
+                    units = 0
+                else:
+                    units = Measurement.Height.NAMES.index(units.lower())
+
+            units_from = self.units if self.units >= 0 and self.units < len(Measurement.Height.NAMES) else 0
+            units_to = units if units >= 0 and units < len(Measurement.Height.NAMES) else 0
+            return Measurement.Height(self.value * Measurement.Height.CONVERSION_FACTORS[units_from][units_to], units_to)
+    
+    class Weight:
+        CONVERSION_FACTORS = [
+            [1, 1, 1, 1, 1],                     # Unspecified (copy value)
+            [1, 1, 1000, 2.20462, 35.274],       # Kilograms
+            [1, 0.001, 1, 0.00220462, 0.035274], # Grams
+            [1, 0.453592, 453.592, 1, 16],       # Pounds
+            [1, 0.0283495, 28.3495, 0.0625, 1]   # Ounces
+        ]
+        NAMES = ["", "kg", "g", "lbs", "oz"]
+
+        def __init__(self, value:int|float, units:int):
+            self._value = value
+            self._units = units
+        
+        def __str__(self):
+            return self.value + ((" " + self.units) if self.units else "")
+        
+        @staticmethod
+        def parse(data) -> Measurement.Weight|None:
+            if data is None: return None
+            return Measurement.Weight(int.from_bytes(data[:2], data[2]))
+        
+        
+        @property
+        def value(self) -> float:
+            return self.value
+        
+        @property
+        def units_id(self) -> int:
+            return self._units if self._units >= 0 and self._units < len(Measurement.Height.NAMES) else 0
+        
+        @property
+        def units(self) -> str:
+            return Measurement.Weight.NAMES[self.units_id]
+        
+        @property
+        def is_specified(self) -> bool:
+            return self._value != 0 or self._units != 0
+        
+        def convert(self, units:str|int):
+            if isinstance(units, str):
+                if units not in Measurement.Weight.NAMES:
+                    units = 0
+                else:
+                    units = Measurement.Weight.NAMES.index(units.lower())
+                
+            units_from = self._units if self._units >= 0 and self._units < len(Measurement.Weight.NAMES) else 0
+            units_to = units if units >= 0 and units < len(Measurement.Weight.NAMES) else 0
+            return Measurement.Weight(self.value * Measurement.Weight.CONVERSION_FACTORS[units_from][units_to], units_to)
+    
+    class Timestamp:
+        def __init__(self, day:tuple, time:tuple=None):
+            self.year, self.month, self.day = day
+            self.hour, self.minute, self.second = time if time is not None else (None, None, None)
+        
+        @property
+        def is_time_specified(self):
+            return self.hour is not None
+
+class Patient:
+    def __init__(self, section:Section1):
+        self.last_name = Patient._parse_str(section.get_tag_contents(0))
+        self.first_name = Patient._parse_str(section.get_tag_contents(1))
+        self.id = Patient._parse_str(section.get_tag_contents(2))
+        self.second_last_name = Patient._parse_str(section.get_tag_contents(3))
+
+        self.age, self.age_units = Patient._unpack(section.get_tag_contents(4), [2, 1])
+        self.age_units = ["unspecified", "years", "months", "weeks", "days", "hours"][self.age_units] if self.age_units >= 0 and self.age_units <= 5 else "Unspecified"
+        self.age_specified = self.age != 0 and self.age_units != 0
+
+        self.birthday = Measurement.Timestamp(self._unpack(section.get_tag_contents(5), [2, 1, 1]))
+
+        self.height = Measurement.Height.parse(section.get_tag_contents(6))
+        self.weight = Measurement.Weight.parse(section.get_tag_contents(7))
+
+        self.sex = Patient._unpack(section.get_tag_contents(8))
+        if self.sex is None: self.sex = 0
+        self.sex = ["not known", "male", "female"][self.sex] if self.sex < 3 else "unspecified"
+
+        self.race_id = Patient._unpack(section.get_tag_contents(9))
+        if self.race_id is None: self.race_id = 0
+        if self.race_id < 4: self.race = ["unspecified", "caucasian", "black", "oriental"][self.race_id]
+        else: self.race = "other"
+        
+        self.classification = section.get_tag_contents(10)
+        # TODO
+
+        self.systolic_blood_pressure = Patient._unpack(section.get_tag_contents(11))
+        self.diatolic_blood_pressure = Patient._unpack(section.get_tag_contents(12))
+
+        self.diagnosis = Patient._parse_str(section.get_tag_contents(13))
+
+        self.acquiring_device_machine_id = section.get_tag_contents(14) # TODO
+        self.analyzing_device_machine_id = section.get_tag_contents(15) # TODO
+
+        self.acquiring_institution = Patient._parse_str(section.get_tag_contents(16))
+        self.analyzing_institution = Patient._parse_str(section.get_tag_contents(17))
+        self.acquiring_department = Patient._parse_str(section.get_tag_contents(18))
+        self.analyzing_department = Patient._parse_str(section.get_tag_contents(19))
+
+        self.referring_physician = Patient._parse_str(section.get_tag_contents(20))
+        self.confirming_physician = Patient._parse_str(section.get_tag_contents(21))
+        self.technician = Patient._parse_str(section.get_tag_contents(22))
+        self.room = Patient._parse_str(section.get_tag_contents(23))
+        
+        self.emergency = Patient._unpack(section.get_tag_contents(24), default=0)
+
+        self.time_of_aquisition = Measurement.Timestamp(
+            Patient._unpack(section.get_tag_contents(25), [2, 1, 1]),
+            Patient._unpack(section.get_tag_contents(26), [1, 1, 1])
+        )
+        self.baseline_filter = Patient._unpack(section.get_tag_contents(27))
+        self.lowpass_filter = Patient._unpack(section.get_tag_contents(28))
+        self.filter_bit_map = Patient._unpack(section.get_tag_contents(29))
+        
+        self.comments = [Patient._parse_str(b) for b in section.get_tag_contents(30)]
+        self.sequence_number = Patient._parse_str(section.get_tag_contents(31))
+        
+        self.medical_history = Patient._unpack(section.get_tag_contents(32), default=0)
+
+        self.electrode_placement, self.electrode_system = Patient._unpack(section.get_tag_contents(33), [1, 1])
+
+        self.timezone, self.timezone_index, self.timezone_description = Patient._unpack(section.get_tag_contents(24), [2, 2], last_is_str_until_end=True)
+
+        self.medical_text_history = Patient._parse_str(section.get_tag_contents(35))
+
+
+    @staticmethod
+    def _unpack(data:bytes, format=None, default=None, last_is_str_until_end=False):
+        if data is None:
+            if format is None:
+                return default
+            return [None for _ in format]
+        if format is None:
+            format = [len(data)]
+        rl = []
+        start = 0
+        for f in format:
+            rl.append(int.from_bytes(data[start:start + f]))
+        if last_is_str_until_end:
+            rl.append(Patient._parse_str(data[start:]))
+        
+        if len(rl) == 1: return rl[0]
+        return rl
+    
+    def _parse_str(data, default=None):
+        if data is None:
+            return default
+        return data.decode('iso-8859-1')
+        
 class Data:
     def __init__(self, path:str):
         file = SCPFile(Stream(path))
+        self.patient_info = Patient(file.get_section(1))
         tags = file.get_section(3).leads
-        print([tag.id for tag in tags])
 
-Data("example.scp")
+Data("Signal.scp")
