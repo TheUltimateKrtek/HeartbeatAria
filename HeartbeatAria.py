@@ -49,27 +49,87 @@ class Stream:
             return None
         return [(byte[0] >> i) & 1 for i in range(7, -1, -1)]  # Extract bits (MSB first)
 
-class HuffmanStreamReader:
-    def __init__(self, stream:Stream, chunk_size:int):
+class HuffmanNode:
+    def __init__(self, value=None):
+        self.path = []
+        self.value = value
+    
+    @property
+    def is_leaf(self) -> bool:
+        return len(self.path) == 0
+    
+    @property
+    def zero(self) -> HuffmanNode:
+        return None if self.is_leaf else self.path[0]
+    
+    @property
+    def one(self) -> HuffmanNode:
+        return None if self.is_leaf else self.path[1]
+    
+    @zero.setter
+    def zero(self, value):
+        if self.is_leaf:
+            self.path = [value, None]
+        else:
+            self.path[0] = value
+    
+    @one.setter
+    def one(self, value):
+        if self.is_leaf:
+            self.path = [None, value]
+        else:
+            self.path[1] = value
+    
+    def read(self, reader:HuffmanReader):
+        if self.is_leaf:
+            if self.value:
+                return self.value
+            return self.read_leaf(reader)
+        return self.path[reader.read_bits(1)].read(reader)
+    
+    def read_leaf(self, reader:HuffmanReader):
+        return None
+
+class DefaultSCPHuffmanLeafNode(HuffmanNode):
+    def __init__(self, bits:int=0):
+        super().__init__()
+        self.bits = bits
+    
+    def read_leaf(self, reader:HuffmanReader):
+        bits = reader.read_bits(self.bits)
+        value = 0
+        for b in bits:
+            value = (value << 1) | b
+        return value
+    
+    @staticmethod
+    def create_tree():
+        root = HuffmanNode()
+        root.zero = HuffmanNode(0)
+        root.one = HuffmanNode()
+        current = root.one
+        for i in range(8):
+            current.zero = HuffmanNode()
+            current.zero.zero = HuffmanNode(i + 1)
+            current.zero.one = HuffmanNode(- i - 1)
+            current.one = HuffmanNode()
+            current = current.one
+        current.zero = DefaultSCPHuffmanLeafNode(8)
+        current.one = DefaultSCPHuffmanLeafNode(16)
+
+class HuffmanReader:
+    def __init__(self, stream:Stream, tree:HuffmanNode):
         self.stream = stream
-        self.chunk_size = chunk_size
-        self.tree = None
-        self.bit_buffer = []
-
-        self.read_tree()
+        self.tree = tree
+        self.buffer = []
     
-    def read_tree(self):
-        pass
-
     def read_bits(self, n=1):
-        while len(self.bit_buffer) < n:
+        while len(self.buffer) < n:
             for b in self.stream.read_bits():
-                self.bit_buffer.append(b)
-        bits = self.bit_buffer[:n]
-        self.bit_buffer = self.bit_buffer[n:]
+                self.buffer.append(b)
+        bits = self.buffer[:n]
+        self.buffer = self.buffer[n:]
         return bits
-    
-
 
 class Header:
     def __init__(self, stream:Stream):
@@ -96,6 +156,31 @@ class Tag:
             self.data = stream.read(self.length)
 
 class LeadIdentification:
+    NAMES = [
+        "unspecified", "I", "II", "V1", "V2", "V3", "V4",
+        "V5", "V6", "V7", "V2R", "V3R", "V4R", "V5R", "V6R",
+        "V7R", "X", "Y", "Z", "CC5", "CM5", "left arm",
+        "right arm", "left leg", "I", "E", "C", "A", "M",
+        "F", "H", "I-cal", "II-cal", "V1-cal", "V2-cal",
+        "V3-cal", "V4-cal", "V5-cal", "V6-cal", "V7-cal",
+        "V2R-cal", "V3R-cal", "V4R-cal", "V5R-cal", "V6R-cal",
+        "V7R-cal", "X-cal", "Y-cal", "Z-cal", "CC5-cal",
+        "CM5-cal", "left arm-cal", "right arm-cal",
+        "left leg-cal", "I-cal", "E-cal", "C-cal", "A-cal",
+        "M-cal", "F-cal", "H-cal", "III", "aVR", "aVL", "aVF",
+        "-aVR", "V8", "V9", "V8R", "V9R", "D (Nehb-Dorsal)",
+        "A (Nehb-Anterior)", "J (Nehb-Inferior)",
+        "Defibrillator lead: anterior-lateral",
+        "External pacing lead: anterior-posterior",
+        "A1 (Auxiliary unipolar lead 1)",
+        "A2 (Auxiliary unipolar lead 2)",
+        "A3 (Auxiliary unipolar lead 3)",
+        "A4 (Auxiliary unipolar lead 4)",
+        "V8-cal", "V9-cal", "V8R-cal", "V9R-cal",
+        "D-cal (cal for Nehb – Dorsal)",
+        "A-cal (cal for Nehb – Anterior)",
+        "J-cal (cal for Nehb – Inferior)"
+    ]
     def __init__(self, stream:Stream):
         self.start = stream.read_int()
         self.length = stream.read_int()
@@ -103,7 +188,11 @@ class LeadIdentification:
 
     def __str__(self):
         return '{0} ({1})'.format(self.id, self.sample_count())
-
+    
+    @property
+    def name(self) -> str:
+        return LeadIdentification.NAMES[self.id] if self.id > 0 and self.id < len(LeadIdentification.NAMES) else LeadIdentification.NAMES[0]
+    
     def sample_count(self):
         return self.end - self.start + 1
 
@@ -220,6 +309,7 @@ class Section2(Section):
         if self.huffman_encoding_type != 19999:
             raise NotImplementedError("Only encoding type 19999 is implemented.")
 
+# Checked, correct
 @Section.parser(3)
 class Section3(Section):
     '''Section 3 contains information about reference beats, flags, and the number of leads.'''
@@ -244,8 +334,8 @@ class Section3(Section):
         
         # Output the lead data
         print("Section 3:")
-        for l in self.leads:
-            print(f"    Lead: {l.id}, Start: {l.start}, Length: {l.length}")
+        print(f"    Count: {lead_count}")
+        print("Leads: " + ", ".join([l.name for l in self.leads]))
 
 @Section.parser(4)
 class Section4(Section):
@@ -483,6 +573,7 @@ class Measurement:
             return self.hour is not None
 
 class Patient:
+    #TODO: Check if correct
     def __init__(self, section:Section1):
         self.last_name = Patient._parse_str(section.get_tag_contents(0))
         self.first_name = Patient._parse_str(section.get_tag_contents(1))
@@ -538,7 +629,8 @@ class Patient:
         self.lowpass_filter = Patient._unpack(section.get_tag_contents(28))
         self.filter_bit_map = Patient._unpack(section.get_tag_contents(29))
         
-        self.comments = [Patient._parse_str(b) for b in section.get_tag_contents(30)]
+        self.comments = section.get_tag_contents(30)
+        self.comments = [Patient._parse_str(b) for b in self.comments] if self.comments else None
         self.sequence_number = Patient._parse_str(section.get_tag_contents(31))
         
         self.medical_history = Patient._unpack(section.get_tag_contents(32), default=0)
@@ -549,7 +641,6 @@ class Patient:
 
         self.medical_text_history = Patient._parse_str(section.get_tag_contents(35))
 
-
     @staticmethod
     def _unpack(data:bytes, format=None, default=None, last_is_str_until_end=False):
         if data is None:
@@ -558,6 +649,10 @@ class Patient:
             return [None for _ in format]
         if format is None:
             format = [len(data)]
+        if isinstance(data, list):
+            if len(data) == 0:
+                return default
+            data = data[0]
         rl = []
         start = 0
         for f in format:
