@@ -1,6 +1,7 @@
 from __future__ import annotations
 import struct
 from abc import ABC, abstractmethod
+import matplotlib.pyplot as plt
 
 class Stream:
     def __init__(self, file:str):
@@ -46,7 +47,7 @@ class Stream:
     def read_bits(self):
         byte = self._file.read(1)
         if not byte:  # End of file
-            return None
+            return []
         return [(byte[0] >> i) & 1 for i in range(7, -1, -1)]  # Extract bits (MSB first)
 
 class HuffmanNode:
@@ -56,7 +57,7 @@ class HuffmanNode:
     
     @property
     def is_leaf(self) -> bool:
-        return len(self.path) == 0
+        return len(self.path) < 2
     
     @property
     def zero(self) -> HuffmanNode:
@@ -82,13 +83,22 @@ class HuffmanNode:
     
     def read(self, reader:HuffmanReader):
         if self.is_leaf:
-            if self.value:
+            if self.value is not None:
                 return self.value
-            return self.read_leaf(reader)
-        return self.path[reader.read_bits(1)].read(reader)
+            read = self.read_leaf(reader)
+            return read
+        path = reader.read_bits(1)[0]
+        return self.path[path].read(reader)
     
     def read_leaf(self, reader:HuffmanReader):
         return None
+    
+    def describe_tree(self, path="", level=0):
+        if not self.is_leaf:
+            self.zero.describe_tree(path + str(0), level + 1)
+            self.one.describe_tree(path + str(1), level + 1)
+        else:
+            print("".join(["|  " for _ in range(level - 1)]) + str(path) + " " + str(self.value))
 
 class DefaultSCPHuffmanLeafNode(HuffmanNode):
     def __init__(self, bits:int=0):
@@ -101,6 +111,9 @@ class DefaultSCPHuffmanLeafNode(HuffmanNode):
         for b in bits:
             value = (value << 1) | b
         return value
+    
+    def describe_tree(self, path="", level=0):
+        print("".join(["|  " for _ in range(level)]) + str(self.bits))
     
     @staticmethod
     def create_tree():
@@ -116,20 +129,29 @@ class DefaultSCPHuffmanLeafNode(HuffmanNode):
             current = current.one
         current.zero = DefaultSCPHuffmanLeafNode(8)
         current.one = DefaultSCPHuffmanLeafNode(16)
+        # root.describe_tree()
+        return root
 
 class HuffmanReader:
     def __init__(self, stream:Stream, tree:HuffmanNode):
         self.stream = stream
         self.tree = tree
         self.buffer = []
+        self.bytes_read = 0
+        self.values_read = 0
     
     def read_bits(self, n=1):
         while len(self.buffer) < n:
             for b in self.stream.read_bits():
                 self.buffer.append(b)
+                self.bytes_read += 1
         bits = self.buffer[:n]
         self.buffer = self.buffer[n:]
         return bits
+    
+    def read(self):
+        self.values_read += 1
+        return self.tree.read(self)
 
 class Header:
     def __init__(self, stream:Stream):
@@ -347,6 +369,14 @@ class Section4(Section):
         self.fiducal_point_sample_number = stream.read_short()
         self.qrs_count = stream.read_short()
 
+        self.qrs = []
+        for i in range(self.qrs_count):
+            type = stream.read_short()
+            index = stream.read_int()
+            fiducial_point = stream.read_int()
+            end = stream.read_int()
+            self.qrs.append((type, index, fiducial_point, end)) # TODO
+
         print("Section 4:")
         print(f"    Reference beat type: {self.reference_beat_type}")
         print(f"    Fiducal Point Sample Number: {self.fiducal_point_sample_number}")
@@ -360,26 +390,37 @@ class Section5(Section):
 
         number_of_leads = len(file.get_section(3).leads)
 
-        self.average_measurement = stream.read_short()
+        self.amplitude_multiplier = stream.read_short()
         self.sample_time_interval = stream.read_short()
-        self.sample_encoding = stream.read_byte()
+        self.difference_encoding = stream.read_byte()
         reserved = stream.read_byte()
 
         lead_lengths = []
         for _ in range(0, number_of_leads):
             lead_lengths.append(stream.read_short())
         
+        section2 = file.get_section(2)
+        reader = None
+        if not section2:
+            reader = stream
+        elif section2.huffman_encoding_type == 19999:
+            reader = HuffmanReader(stream, DefaultSCPHuffmanLeafNode.create_tree())
+        
         self.samples = []
         for length in lead_lengths:
             samples = []
-            sample_count = length / 2
-            while sample_count > 0:
-                samples.append(stream.read_short())
-                sample_count -= 1
+            if not section2:
+                for i in range(length // 2):
+                    samples.append(reader.read_short())
+            else:
+                reader.bytes_read = 0
+                reader.samples_read = 0
+                while reader.bytes_read < length:
+                    samples.append(reader.read())
             self.samples.append(samples)
 
         print("Section 5:")
-        print("    TODO")
+        print(f"    Lengths: {[str(len(s)) for length, s in zip(lead_lengths, self.samples)]}")
 
 @Section.parser(6)
 class Section6(Section):
@@ -388,28 +429,41 @@ class Section6(Section):
         super().__init__(header)
 
         number_of_leads = len(file.get_section(3).leads)
-        self.average_measurement = stream.read_short()
+        self.amplitude_multiplier = stream.read_short()
         self.sample_time_interval = stream.read_short()
-        self.sample_encoding = stream.read_byte()
+        self.difference_encoding = stream.read_byte()
         self.bimodal_compression = stream.read_byte()
 
         lead_lengths = []
         for _ in range(0, number_of_leads):
             lead_lengths.append(stream.read_short())
         
+        section2 = file.get_section(2)
+        reader = None
+        if not section2:
+            reader = stream
+        elif section2.huffman_encoding_type == 19999:
+            reader = HuffmanReader(stream, DefaultSCPHuffmanLeafNode.create_tree())
+
         self.samples = []
         for length in lead_lengths:
             samples = []
-            sample_count = length / 2
-            while sample_count > 0:
-                samples.append(stream.read_short())
-                sample_count -= 1
+            if not section2:
+                for i in range(length):
+                    samples.append(reader.read_short())
+            else:
+                reader.bytes_read = 0
+                reader.samples_read = 0
+                while reader.bytes_read < length:
+                    samples.append(reader.read())
+                print(reader.buffer)
             self.samples.append(samples)
 
         print("Section 6:")
+        print(f"    Bimodal compression: {self.bimodal_compression}")
         print(f"    Lead lenths: {lead_lengths}")
-        for lead, sample in zip(file.get_section(3).leads, self.samples):
-            print(f"{len(sample)} samples for lead {lead.id}: {sample[20] if len(sample) > 20 else sample}")
+        for lead, samples in zip(file.get_section(3).leads, self.samples):
+            print(f"    {len(samples)} samples for lead {lead.id}: {samples[:10] if len(samples) > 10 else samples}")
 
 @Section.parser(7)
 class Section7(Section):
@@ -673,5 +727,30 @@ class Data:
         file = SCPFile(Stream(path))
         self.patient_info = Patient(file.get_section(1))
         tags = file.get_section(3).leads
+        self.draw_graph(file)
+    
+    def draw_graph(self, file):
+        section6 = file.get_section(6)
+        samples = section6.samples[6]
+        self.plot_samples(samples)
+
+    def plot_samples(self, samples, title="ECG Signal", sampling_rate=500):
+        """
+            Plots a list of numerical samples.
+
+            :param samples: A list of numerical values representing the signal.
+            :param title: Title of the plot.
+            :param sampling_rate: The number of samples per second (default is 500 Hz).
+        """
+        time_axis = [i / sampling_rate for i in range(len(samples))]
+
+        plt.figure(figsize=(10, 4))
+        plt.plot(time_axis, samples, marker='o', linestyle='-')
+        plt.xlabel("Time (s)")
+        plt.ylabel("Amplitude")
+        plt.title(title)
+        plt.grid()
+        plt.show()
+        plt.savefig("graph.png")
 
 Data("Signal.scp")
