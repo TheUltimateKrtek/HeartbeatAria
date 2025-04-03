@@ -2,6 +2,7 @@ from __future__ import annotations
 import struct
 from abc import ABC, abstractmethod
 import matplotlib.pyplot as plt
+import numpy as np
 
 class Stream:
     def __init__(self, file:str):
@@ -111,9 +112,13 @@ class DefaultSCPHuffmanLeafNode(HuffmanNode):
     def read_leaf(self, reader:HuffmanReader):
         bits = reader.read_bits(self.bits)
         value = 0
-        for b in bits:
+        for i, b in enumerate(bits):
             value = (value << 1) | b
-        return value
+            # value = value | (b << i)
+        if self.bits == 8:
+            return struct.unpack("<b", struct.pack("<B", value))[0]
+        else:
+            return struct.unpack("<h", struct.pack("<H", value))[0]
     
     def describe_tree(self, path="", level=0):
         print("".join(["|  " for _ in range(level - 1)]) + str(path) + " " + str(self.bits))
@@ -278,7 +283,7 @@ class Section0(Section):
 
         print("Section 0:")
         print(f"    Length according to header: {self.header.length}")
-        print(f"{self.pointers} sections:")
+        print(f"{len(self.pointers)} sections:")
         for p in self.pointers:
             print(f"    Section {p.id}: Index {p.index}, Length {p.length}")
 
@@ -485,7 +490,7 @@ class Section6(Section):
         print(f"    Bimodal compression: {self.bimodal_compression}")
         print(f"    Lead lenths: {lead_lengths}")
         for l, lead, samples in zip(lead_lengths, file.get_section(3).leads, self.samples):
-            print(f"    Lead {lead.id}: {lead.name}, {lead.length} expected, {l} bytes read, {len(samples)} samples")
+            print(f"    Lead {lead.id}: {lead.name}, {lead.length} samples expected, {l} bytes read, {len(samples)} samples")
 
 @Section.parser(7)
 class Section7(Section):
@@ -662,7 +667,7 @@ class Patient:
         self.second_last_name = Patient._parse_str(section.get_tag_contents(3))
 
         self.age, self.age_units = Patient._unpack(section.get_tag_contents(4), [2, 1])
-        self.age_units = ["unspecified", "years", "months", "weeks", "days", "hours"][self.age_units] if self.age_units >= 0 and self.age_units <= 5 else "Unspecified"
+        self.age_units = ["unspecified", "years", "months", "weeks", "days", "hours"][self.age_units] if self.age_units and self.age_units >= 0 and self.age_units <= 5 else "unspecified"
         self.age_specified = self.age != 0 and self.age_units != 0
 
         self.birthday = Measurement.Timestamp(self._unpack(section.get_tag_contents(5), [2, 1, 1]))
@@ -727,7 +732,7 @@ class Patient:
         if data is None:
             if format is None:
                 return default
-            return [None for _ in format]
+            return [None for _ in range(len(format) + int(last_is_str_until_end))]
         if format is None:
             format = [len(data)]
         if isinstance(data, list):
@@ -750,33 +755,42 @@ class Patient:
         return data.decode('iso-8859-1')
 
 class Signal:
-    def __init__(self, name:str, signal:list, difference_encoding:int=0):
-        self.signal = signal.copy()
+    def __init__(self, name:str, signal:list, sample_time_interval:int, amplitude_multiplier:int=1, difference_encoding:int=0):
+        self.signal = np.array(signal)
         if difference_encoding == 1:
-            for i in range(1, len(signal)):
-                self.signal[i] = signal[i] - signal[i - 1]
+            for i in range(1, len(self.signal)):
+                self.signal[i] = self.signal[i] + self.signal[i - 1]
         elif difference_encoding == 2:
-            for i in range(2, len(signal)):
-                self.signal[i] = signal[i] - 2 * signal[i - 1] + signal[i - 2]
+            for i in range(2, len(self.signal)):
+                self.signal[i] = self.signal[i] + 2 * self.signal[i - 1] - self.signal[i - 2]
+        
+        self.amplitude_multiplier = amplitude_multiplier * 0.000000001
         self.name = name
+        self.sample_time_interval = sample_time_interval
 
 class Data:
     def __init__(self, path:str):
         file = SCPFile(Stream(path))
         self.patient_info = Patient(file.get_section(1))
+
+        avm5 = file.get_section(5).amplitude_multiplier
+        avm6 = file.get_section(6).amplitude_multiplier
         self.data5 = []
         self.data6 = []
         for s5, s6, lead in zip(file.get_section(5).samples, file.get_section(6).samples, file.get_section(3).leads):
-            self.data5.append(Signal(lead.name, s5, file.get_section(5).difference_encoding))
-            self.data6.append(Signal(lead.name, s6, file.get_section(6).difference_encoding))
-        tags = file.get_section(3).leads
-        self.draw_graph(file, signal=6, length=200)
+            self.data5.append(Signal(lead.name, s5, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding))
+            self.data6.append(Signal(lead.name, s6, file.get_section(6).sample_time_interval, avm6, file.get_section(6).difference_encoding))
 
-    def draw_graph(self, file, signal=0, length=200):
-        samples = self.data6[signal].signal[:min(len(self.data6[signal].signal), length)]
-        self.plot_samples(samples, title=f"ECG Signal {signal}")
+        self.draw_graph(file, signal=0)
 
-    def plot_samples(self, samples, title="ECG Signal"):
+    def draw_graph(self, file, signal=0, section=6, length=2 ** 30):
+        s = self.data6[signal] if section == 6 else self.data5[signal]
+        samples = s.signal[:min(len(s.signal), length)]
+        print(f"Displaying {len(samples)} samples.")
+        sample_time_interval = s.sample_time_interval * 0.000001
+        self.plot_samples(samples, title=f"ECG Signal {s.name}", sample_time_interval=sample_time_interval)
+
+    def plot_samples(self, samples, title="ECG Signal", sample_time_interval=1):
         """
             Plots a list of numerical samples.
 
@@ -784,12 +798,12 @@ class Data:
             :param title: Title of the plot.
             :param sampling_rate: The number of samples per second (default is 500 Hz).
         """
-        time_axis = [i for i in range(len(samples))]
+        time_axis = [i * sample_time_interval for i in range(len(samples))]
 
         plt.figure(figsize=(25, 10))
         plt.plot(time_axis, samples, marker='o', linestyle='-')
         plt.xlabel("Time (s)")
-        plt.ylabel("Amplitude")
+        plt.ylabel("Amplitude (nV)")
         plt.title(title)
         plt.grid()
         plt.show()
