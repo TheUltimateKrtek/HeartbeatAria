@@ -277,9 +277,10 @@ class Section0(Section):
             self.pointers.append(pointer)
 
         print("Section 0:")
-        print("    Pointer indexes:", [p.index for p in self.pointers])
-        print("    Pointer ids:", [p.id for p in self.pointers])
-        print("    Pointer lengths:", [p.length for p in self.pointers])
+        print(f"    Length according to header: {self.header.length}")
+        print(f"{self.pointers} sections:")
+        for p in self.pointers:
+            print(f"    Section {p.id}: Index {p.index}, Length {p.length}")
 
     def has_section(self, section_id):
         pointer = self.pointer_for_section(section_id)
@@ -308,6 +309,7 @@ class Section1(Section):
             self.tags.append(tag)
         
         print("Section 1:")
+        print(f"    Length according to header: {self.header.length}")
         for t in self.tags:
             print(f"    Tag: {t.tag}, Length: {t.length}, Data: {t.data if len(t.data) < 20 else str(t.data[:20]) + "..."}")
     
@@ -329,6 +331,7 @@ class Section2(Section):
         self.huffman_encoding_type = stream.read_short()
         
         print("Section 2:")
+        print(f"    Length according to header: {self.header.length}")
         print(f"    Huffman table count: {self.huffman_encoding_type}")
         if self.huffman_encoding_type != 19999:
             raise NotImplementedError("Only encoding type 19999 is implemented.")
@@ -345,8 +348,8 @@ class Section3(Section):
         
         # Read the lead flags (byte 1) - not needed for now
         self.lead_flags = stream.read_byte()
-        self.subtract_encoding = ((self.lead_flags >> 0) & 1) == 1
-        self.all_simultaniously_recorded = ((self.lead_flags >> 2) & 2) == 1
+        self.subtract_encoding = ((self.lead_flags >> 0) & 1) == 0
+        self.all_simultaniously_recorded = ((self.lead_flags >> 2) & 2) == 0
         self.simultanious_count = (self.lead_flags >> 3) & 0x1F
         
         # Calculate the number of leads based on the section length
@@ -361,6 +364,7 @@ class Section3(Section):
         
         # Output the lead data
         print("Section 3:")
+        print(f"    Length according to header: {self.header.length}")
         print(f"    Subtract encoding: {self.subtract_encoding}")
         print(f"    All simultaniously recorded: {self.all_simultaniously_recorded}")
         print(f"    Simultanious count: {self.simultanious_count}")
@@ -386,6 +390,7 @@ class Section4(Section):
             self.qrs.append((type, index, fiducial_point, end)) # TODO
 
         print("Section 4:")
+        print(f"    Length according to header: {self.header.length}")
         print(f"    Reference beat type: {self.reference_beat_type}")
         print(f"    Fiducal Point Sample Number: {self.fiducal_point_sample_number}")
         print(f"    Qrs count: {self.qrs_count}")
@@ -428,6 +433,7 @@ class Section5(Section):
             self.samples.append(samples)
 
         print("Section 5:")
+        print(f"    Length according to header: {self.header.length}")
         print(f"    Amplitude multiplier: {self.amplitude_multiplier}")
         print(f"    Sample time interval: {self.sample_time_interval}")
         print(f"    Difference encodeing: {self.difference_encoding}")
@@ -509,6 +515,7 @@ class Section7(Section):
             self.pace_widths.append(self.reader.read_short())
 
         print("Section 7:")
+        print(f"    Length according to header: {self.header.length}")
         print(f"    Reference count: {self.reference_count}")
         print(f"    Pace count: {self.pace_count}")
         print(f"    RR interval: {self.rr_interval}")
