@@ -44,10 +44,12 @@ class Stream:
         data = self.read(n)
         return data.decode('iso-8859-1')
     
-    def read_bits(self):
+    def read_bits(self, little=False):
         byte = self._file.read(1)
         if not byte:  # End of file
             return []
+        if little:
+            return [(byte[0] >> i) & 1 for i in range(8)]
         return [(byte[0] >> i) & 1 for i in range(7, -1, -1)]  # Extract bits (MSB first)
 
 class HuffmanNode:
@@ -95,6 +97,7 @@ class HuffmanNode:
     
     def describe_tree(self, path="", level=0):
         if not self.is_leaf:
+            print("".join(["|  " for _ in range(level - 1)]) + str(path))
             self.zero.describe_tree(path + str(0), level + 1)
             self.one.describe_tree(path + str(1), level + 1)
         else:
@@ -113,7 +116,7 @@ class DefaultSCPHuffmanLeafNode(HuffmanNode):
         return value
     
     def describe_tree(self, path="", level=0):
-        print("".join(["|  " for _ in range(level)]) + str(self.bits))
+        print("".join(["|  " for _ in range(level - 1)]) + str(path) + " " + str(self.bits))
     
     @staticmethod
     def create_tree():
@@ -139,6 +142,7 @@ class HuffmanReader:
         self.buffer = []
         self.bytes_read = 0
         self.values_read = 0
+        # tree.describe_tree()
     
     def read_bits(self, n=1):
         while len(self.buffer) < n:
@@ -151,7 +155,8 @@ class HuffmanReader:
     
     def read(self):
         self.values_read += 1
-        return self.tree.read(self)
+        r = self.tree.read(self)
+        return r
 
 class Header:
     def __init__(self, stream:Stream):
@@ -209,14 +214,11 @@ class LeadIdentification:
         self.id = stream.read_byte()
 
     def __str__(self):
-        return '{0} ({1})'.format(self.id, self.sample_count())
+        return '{0} ({1})'.format(self.name, self.length)
     
     @property
     def name(self) -> str:
         return LeadIdentification.NAMES[self.id] if self.id > 0 and self.id < len(LeadIdentification.NAMES) else LeadIdentification.NAMES[0]
-    
-    def sample_count(self):
-        return self.end - self.start + 1
 
 class Section:
     _PARSERS = {}
@@ -343,6 +345,9 @@ class Section3(Section):
         
         # Read the lead flags (byte 1) - not needed for now
         self.lead_flags = stream.read_byte()
+        self.subtract_encoding = ((self.lead_flags >> 0) & 1) == 1
+        self.all_simultaniously_recorded = ((self.lead_flags >> 2) & 2) == 1
+        self.simultanious_count = (self.lead_flags >> 3) & 0x1F
         
         # Calculate the number of leads based on the section length
         lead_count = (header.length - 16) // 9
@@ -356,6 +361,9 @@ class Section3(Section):
         
         # Output the lead data
         print("Section 3:")
+        print(f"    Subtract encoding: {self.subtract_encoding}")
+        print(f"    All simultaniously recorded: {self.all_simultaniously_recorded}")
+        print(f"    Simultanious count: {self.simultanious_count}")
         print(f"    Count: {lead_count}")
         print("Leads: " + ", ".join([l.name for l in self.leads]))
 
@@ -420,7 +428,12 @@ class Section5(Section):
             self.samples.append(samples)
 
         print("Section 5:")
-        print(f"    Lengths: {[str(len(s)) for length, s in zip(lead_lengths, self.samples)]}")
+        print(f"    Amplitude multiplier: {self.amplitude_multiplier}")
+        print(f"    Sample time interval: {self.sample_time_interval}")
+        print(f"    Difference encodeing: {self.difference_encoding}")
+        print(f"    Lead lenths: {lead_lengths}")
+        for l, lead, samples in zip(lead_lengths, file.get_section(3).leads, self.samples):
+            print(f"    Lead {lead.id}: {lead.name}, {l} bytes read, {len(samples)} samples")
 
 @Section.parser(6)
 class Section6(Section):
@@ -449,21 +462,24 @@ class Section6(Section):
         for length in lead_lengths:
             samples = []
             if not section2:
-                for i in range(length):
+                for i in range(length // 2):
                     samples.append(reader.read_short())
             else:
                 reader.bytes_read = 0
                 reader.samples_read = 0
                 while reader.bytes_read < length:
                     samples.append(reader.read())
-                print(reader.buffer)
             self.samples.append(samples)
 
         print("Section 6:")
+        print(f"    Length according to header: {self.header.length - 16 - 2 * len(lead_lengths)} ({sum(lead_lengths)} read)")
+        print(f"    Amplitude multiplier: {self.amplitude_multiplier}")
+        print(f"    Sample time interval: {self.sample_time_interval}")
+        print(f"    Difference encodeing: {self.difference_encoding}")
         print(f"    Bimodal compression: {self.bimodal_compression}")
         print(f"    Lead lenths: {lead_lengths}")
-        for lead, samples in zip(file.get_section(3).leads, self.samples):
-            print(f"    {len(samples)} samples for lead {lead.id}: {samples[:10] if len(samples) > 10 else samples}")
+        for l, lead, samples in zip(lead_lengths, file.get_section(3).leads, self.samples):
+            print(f"    Lead {lead.id}: {lead.name}, {lead.length} expected, {l} bytes read, {len(samples)} samples")
 
 @Section.parser(7)
 class Section7(Section):
@@ -493,7 +509,11 @@ class Section7(Section):
             self.pace_widths.append(self.reader.read_short())
 
         print("Section 7:")
-        print("    TODO")
+        print(f"    Reference count: {self.reference_count}")
+        print(f"    Pace count: {self.pace_count}")
+        print(f"    RR interval: {self.rr_interval}")
+        print(f"    PP interval: {self.pp_interval}")
+        print(f"    Pace length: {len(self.pace_times)}")
 
 class SectionUnknown(Section):
     '''Unknown section representation.'''
@@ -652,7 +672,7 @@ class Patient:
         if self.race_id < 4: self.race = ["unspecified", "caucasian", "black", "oriental"][self.race_id]
         else: self.race = "other"
         
-        self.classification = section.get_tag_contents(10)
+        self.classification = section.get_tag_contents(10) 
         # TODO
 
         self.systolic_blood_pressure = Patient._unpack(section.get_tag_contents(11))
@@ -721,20 +741,35 @@ class Patient:
         if data is None:
             return default
         return data.decode('iso-8859-1')
-        
+
+class Signal:
+    def __init__(self, name:str, signal:list, difference_encoding:int=0):
+        self.signal = signal.copy()
+        if difference_encoding == 1:
+            for i in range(1, len(signal)):
+                self.signal[i] = signal[i] - signal[i - 1]
+        elif difference_encoding == 2:
+            for i in range(2, len(signal)):
+                self.signal[i] = signal[i] - 2 * signal[i - 1] + signal[i - 2]
+        self.name = name
+
 class Data:
     def __init__(self, path:str):
         file = SCPFile(Stream(path))
         self.patient_info = Patient(file.get_section(1))
+        self.data5 = []
+        self.data6 = []
+        for s5, s6, lead in zip(file.get_section(5).samples, file.get_section(6).samples, file.get_section(3).leads):
+            self.data5.append(Signal(lead.name, s5, file.get_section(5).difference_encoding))
+            self.data6.append(Signal(lead.name, s6, file.get_section(6).difference_encoding))
         tags = file.get_section(3).leads
-        self.draw_graph(file)
-    
-    def draw_graph(self, file):
-        section6 = file.get_section(6)
-        samples = section6.samples[6]
-        self.plot_samples(samples)
+        self.draw_graph(file, signal=6, length=200)
 
-    def plot_samples(self, samples, title="ECG Signal", sampling_rate=500):
+    def draw_graph(self, file, signal=0, length=200):
+        samples = self.data6[signal].signal[:min(len(self.data6[signal].signal), length)]
+        self.plot_samples(samples, title=f"ECG Signal {signal}")
+
+    def plot_samples(self, samples, title="ECG Signal"):
         """
             Plots a list of numerical samples.
 
@@ -742,9 +777,9 @@ class Data:
             :param title: Title of the plot.
             :param sampling_rate: The number of samples per second (default is 500 Hz).
         """
-        time_axis = [i / sampling_rate for i in range(len(samples))]
+        time_axis = [i for i in range(len(samples))]
 
-        plt.figure(figsize=(10, 4))
+        plt.figure(figsize=(25, 10))
         plt.plot(time_axis, samples, marker='o', linestyle='-')
         plt.xlabel("Time (s)")
         plt.ylabel("Amplitude")
@@ -752,5 +787,6 @@ class Data:
         plt.grid()
         plt.show()
         plt.savefig("graph.png")
+        print("Graph saved!")
 
 Data("Signal.scp")
