@@ -155,7 +155,7 @@ class HuffmanReader:
         while len(self.buffer) < n:
             for b in self.stream.read_bits():
                 self.buffer.append(b)
-                self.bytes_read += 1
+            self.bytes_read += 1
         bits = self.buffer[:n]
         self.buffer = self.buffer[n:]
         return bits
@@ -164,6 +164,10 @@ class HuffmanReader:
         self.values_read += 1
         r = self.tree.read(self)
         return r
+    
+    def reset(self):
+        self.buffer = []
+        self.bytes_read = 0
 
 class Header:
     def __init__(self, stream:Stream):
@@ -492,7 +496,7 @@ class Section6(Section):
             self.samples.append(samples)
 
             # Flush buffer
-            # reader.buffer = []
+            reader.reset()
 
         print("Section 6:")
         print(f"    Length according to header: {self.header.length - 16 - 2 * len(lead_lengths)} ({sum(lead_lengths)} read)")
@@ -504,7 +508,7 @@ class Section6(Section):
         for l, lead, samples in zip(lead_lengths, file.get_section(3).leads, self.samples):
             print(f"    Lead {lead.id}: {lead.name}, {lead.length} samples expected, {l} bytes read, {len(samples)} samples")
         
-        print(reader.tree.describe_tree())
+        # print(reader.tree.describe_tree())
 
 @Section.parser(7)
 class Section7(Section):
