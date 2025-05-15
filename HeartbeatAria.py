@@ -57,6 +57,7 @@ class HuffmanNode:
     def __init__(self, value=None):
         self.path = []
         self.value = value
+        self.decoded = 0
     
     @property
     def is_leaf(self) -> bool:
@@ -89,6 +90,7 @@ class HuffmanNode:
             if self.value is not None:
                 return self.value
             read = self.read_leaf(reader)
+            self.decoded += 1
             return read
         path = reader.read_bits(1)[0]
         return self.path[path].read(reader)
@@ -102,7 +104,7 @@ class HuffmanNode:
             self.zero.describe_tree(path + str(0), level + 1)
             self.one.describe_tree(path + str(1), level + 1)
         else:
-            print("".join(["|  " for _ in range(level - 1)]) + str(path) + " " + str(self.value))
+            print("".join(["|  " for _ in range(level - 1)]) + str(path) + " " + str(self.value) + " " + str(self.decoded))
 
 class DefaultSCPHuffmanLeafNode(HuffmanNode):
     def __init__(self, bits:int=0):
@@ -121,7 +123,7 @@ class DefaultSCPHuffmanLeafNode(HuffmanNode):
             return struct.unpack("<h", struct.pack("<H", value))[0]
     
     def describe_tree(self, path="", level=0):
-        print("".join(["|  " for _ in range(level - 1)]) + str(path) + " " + str(self.bits))
+        print("".join(["|  " for _ in range(level - 1)]) + str(path) + " " + str(self.bits) + " " + str(self.decoded))
     
     @staticmethod
     def create_tree():
@@ -177,6 +179,9 @@ class Pointer:
         self.id = stream.read_short()
         self.length = stream.read_int()
         self.index = stream.read_int()
+    
+    def __str__(self):
+        return f"Pointer: {self.id}, Length: {self.length}, Index: {self.index}"
 
 class Tag:
     def __init__(self, stream:Stream):
@@ -186,6 +191,9 @@ class Tag:
 
         if self.length > 0:
             self.data = stream.read(self.length)
+    
+    def __str__(self):
+        return f"Tag: {self.tag}, Length: {self.length}, Data: {self.data if len(self.data) < 20 else str(self.data[:20]) + '...'}"
 
 class LeadIdentification:
     NAMES = [
@@ -219,7 +227,7 @@ class LeadIdentification:
         self.id = stream.read_byte()
 
     def __str__(self):
-        return '{0} ({1})'.format(self.name, self.length)
+        return f'Lead: {self.name} ({self.length})'
     
     @property
     def name(self) -> str:
@@ -282,10 +290,11 @@ class Section0(Section):
             self.pointers.append(pointer)
 
         print("Section 0:")
+        print(f"    Protocol: {self.header.protocol}, Version: {self.header.version}")
         print(f"    Length according to header: {self.header.length}")
-        print(f"{len(self.pointers)} sections:")
+        print(f"        {len(self.pointers)} sections:")
         for p in self.pointers:
-            print(f"    Section {p.id}: Index {p.index}, Length {p.length}")
+            print(f"    {p}")
 
     def has_section(self, section_id):
         pointer = self.pointer_for_section(section_id)
@@ -482,6 +491,9 @@ class Section6(Section):
                     samples.append(reader.read())
             self.samples.append(samples)
 
+            # Flush buffer
+            # reader.buffer = []
+
         print("Section 6:")
         print(f"    Length according to header: {self.header.length - 16 - 2 * len(lead_lengths)} ({sum(lead_lengths)} read)")
         print(f"    Amplitude multiplier: {self.amplitude_multiplier}")
@@ -491,6 +503,8 @@ class Section6(Section):
         print(f"    Lead lenths: {lead_lengths}")
         for l, lead, samples in zip(lead_lengths, file.get_section(3).leads, self.samples):
             print(f"    Lead {lead.id}: {lead.name}, {lead.length} samples expected, {l} bytes read, {len(samples)} samples")
+        
+        print(reader.tree.describe_tree())
 
 @Section.parser(7)
 class Section7(Section):
@@ -539,9 +553,8 @@ class SCPFile:
         self.crc = stream.read_short()
         self.length = stream.read_int()
         self.sections = []
-        self.section0 = Section.parse(stream, None, self)
-        self.sections.append(self.section0)
-        for pointer in self.section0.pointers:
+        section0 = Section.parse(stream, None, self)
+        for pointer in section0.pointers:
             self.sections.append(Section.parse(stream, pointer, self))
         
     def get_section(self, id:int) -> Section:
@@ -781,7 +794,7 @@ class Data:
             self.data5.append(Signal(lead.name, s5, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding))
             self.data6.append(Signal(lead.name, s6, file.get_section(6).sample_time_interval, avm6, file.get_section(6).difference_encoding))
 
-        self.draw_graph(file, signal=0)
+        self.draw_graph(file, signal=0, section=6)
 
     def draw_graph(self, file, signal=0, section=6, length=2 ** 30):
         s = self.data6[signal] if section == 6 else self.data5[signal]
