@@ -483,7 +483,8 @@ class Section6(Section):
             reader = HuffmanReader(stream, DefaultSCPHuffmanLeafNode.create_tree())
 
         self.samples = []
-        for length in lead_lengths:
+        for i in range(len(lead_lengths)):
+            length = lead_lengths[i]
             samples = []
             if not section2:
                 for i in range(length // 2):
@@ -492,6 +493,7 @@ class Section6(Section):
                 reader.bytes_read = 0
                 reader.samples_read = 0
                 while reader.bytes_read < length:
+                # while reader.values_read < file.get_section(3).leads[i].length:
                     samples.append(reader.read())
             self.samples.append(samples)
 
@@ -798,7 +800,7 @@ class Data:
             self.data5.append(Signal(lead.name, s5, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding))
             self.data6.append(Signal(lead.name, s6, file.get_section(6).sample_time_interval, avm6, file.get_section(6).difference_encoding))
 
-        self.draw_graph(file, signal=0, section=6)
+        self.draw_graph(file, signal=3, section=6)
 
     def draw_graph(self, file, signal=0, section=6, length=2 ** 30):
         s = self.data6[signal] if section == 6 else self.data5[signal]
