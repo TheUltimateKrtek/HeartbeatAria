@@ -64,11 +64,11 @@ class HuffmanNode:
         return len(self.path) < 2
     
     @property
-    def zero(self) -> HuffmanNode:
+    def zero(self) -> HuffmanNode|None:
         return None if self.is_leaf else self.path[0]
     
     @property
-    def one(self) -> HuffmanNode:
+    def one(self) -> HuffmanNode|None:
         return None if self.is_leaf else self.path[1]
     
     @zero.setter
@@ -168,6 +168,7 @@ class HuffmanReader:
     def reset(self):
         self.buffer = []
         self.bytes_read = 0
+        self.values_read = 0
 
 class Header:
     def __init__(self, stream:Stream):
@@ -492,8 +493,8 @@ class Section6(Section):
             else:
                 reader.bytes_read = 0
                 reader.samples_read = 0
-                while reader.bytes_read < length:
-                # while reader.values_read < file.get_section(3).leads[i].length:
+                # while reader.bytes_read < length:
+                while reader.values_read < file.get_section(3).leads[i].length:
                     samples.append(reader.read())
             self.samples.append(samples)
 
@@ -778,10 +779,13 @@ class Signal:
         self.signal = np.array(signal)
         if difference_encoding == 1:
             for i in range(1, len(self.signal)):
-                self.signal[i] = self.signal[i] + self.signal[i - 1]
+                self.signal[i] += self.signal[i - 1]
         elif difference_encoding == 2:
-            for i in range(2, len(self.signal)):
-                self.signal[i] = self.signal[i] + 2 * self.signal[i - 1] - self.signal[i - 2]
+            orig = self.signal.copy()
+            for i in range(2, len(orig)):
+                orig[i] = orig[i] + 2 * orig[i - 1] - orig[i - 2]
+            self.signal = orig
+
         
         self.amplitude_multiplier = amplitude_multiplier * 0.000000001
         self.name = name
@@ -800,7 +804,7 @@ class Data:
             self.data5.append(Signal(lead.name, s5, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding))
             self.data6.append(Signal(lead.name, s6, file.get_section(6).sample_time_interval, avm6, file.get_section(6).difference_encoding))
 
-        self.draw_graph(file, signal=3, section=6)
+        self.draw_graph(file, signal=11, section=6)
 
     def draw_graph(self, file, signal=0, section=6, length=2 ** 30):
         s = self.data6[signal] if section == 6 else self.data5[signal]
@@ -820,7 +824,7 @@ class Data:
         time_axis = [i * sample_time_interval for i in range(len(samples))]
 
         plt.figure(figsize=(25, 10))
-        plt.plot(time_axis, samples, marker='o', linestyle='-')
+        plt.plot(time_axis, samples, linestyle='-')
         plt.xlabel("Time (s)")
         plt.ylabel("Amplitude (nV)")
         plt.title(title)
