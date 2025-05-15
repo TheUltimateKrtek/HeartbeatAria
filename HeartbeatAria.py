@@ -804,7 +804,10 @@ class Data:
             self.data5.append(Signal(lead.name, s5, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding))
             self.data6.append(Signal(lead.name, s6, file.get_section(6).sample_time_interval, avm6, file.get_section(6).difference_encoding))
 
-        self.draw_graph(file, signal=11, section=6)
+        # self.avm6[2] = Signal("III", self.avm6[1].signal - self.avm6[0].signal, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding)
+        # TODO: Formulas
+
+        self.draw_graph(file, signal=2, section=6)
 
     def draw_graph(self, file, signal=0, section=6, length=2 ** 30):
         s = self.data6[signal] if section == 6 else self.data5[signal]
