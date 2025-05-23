@@ -791,7 +791,7 @@ class Signal:
         self.name = name
         self.sample_time_interval = sample_time_interval
 
-class Data:
+class Data: 
     def __init__(self, path:str):
         file = SCPFile(Stream(path))
         self.patient_info = Patient(file.get_section(1))
@@ -804,7 +804,7 @@ class Data:
             self.data5.append(Signal(lead.name, s5, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding))
             self.data6.append(Signal(lead.name, s6, file.get_section(6).sample_time_interval, avm6, file.get_section(6).difference_encoding))
 
-        # self.avm6[2] = Signal("III", self.avm6[1].signal - self.avm6[0].signal, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding)
+        self.data6[2] = Signal("III", self.data6[1].signal - self.data6[0].signal, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding)
         # TODO: Formulas
 
         self.draw_graph(file, signal=2, section=6)
