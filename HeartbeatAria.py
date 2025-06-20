@@ -3,6 +3,8 @@ import struct
 from abc import ABC, abstractmethod
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy
+import scipy.signal
 
 class Stream:
     def __init__(self, file:str):
@@ -355,7 +357,6 @@ class Section2(Section):
         if self.huffman_encoding_type != 19999:
             raise NotImplementedError("Only encoding type 19999 is implemented.")
 
-# Checked, correct
 @Section.parser(3)
 class Section3(Section):
     '''Section 3 contains information about reference beats, flags, and the number of leads.'''
@@ -790,7 +791,7 @@ class Signal:
         self.amplitude_multiplier = amplitude_multiplier * 0.000000001
         self.name = name
         self.sample_time_interval = sample_time_interval
-
+    
 class Data:
     def __init__(self, path:str):
         file = SCPFile(Stream(path))
@@ -807,16 +808,19 @@ class Data:
         # self.avm6[2] = Signal("III", self.avm6[1].signal - self.avm6[0].signal, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding)
         # TODO: Formulas
 
-        self.draw_graph(file, signal=2, section=6)
+        for i5 in range(len(self.data5)):
+            self.draw_graph(file, signal=i5, section=5)
+        for i6 in range(len(self.data6)):
+            self.draw_graph(file, signal=i6, section=6)
 
     def draw_graph(self, file, signal=0, section=6, length=2 ** 30):
         s = self.data6[signal] if section == 6 else self.data5[signal]
         samples = s.signal[:min(len(s.signal), length)]
         print(f"Displaying {len(samples)} samples.")
         sample_time_interval = s.sample_time_interval * 0.000001
-        self.plot_samples(samples, title=f"ECG Signal {s.name}", sample_time_interval=sample_time_interval)
+        self.plot_samples(samples, title=f"ECG Signal {s.name}", sample_time_interval=sample_time_interval, section=section, index=signal)
 
-    def plot_samples(self, samples, title="ECG Signal", sample_time_interval=1):
+    def plot_samples(self, samples, title="ECG Signal", sample_time_interval=1, section=6, index=0):
         """
             Plots a list of numerical samples.
 
@@ -832,8 +836,7 @@ class Data:
         plt.ylabel("Amplitude (nV)")
         plt.title(title)
         plt.grid()
-        plt.show()
-        plt.savefig("graph.png")
+        plt.savefig(f"graph-{section}-{index}.png")
         print("Graph saved!")
 
 Data("Signal.scp")
