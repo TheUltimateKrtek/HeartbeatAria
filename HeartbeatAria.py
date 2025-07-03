@@ -1,9 +1,17 @@
 from __future__ import annotations
+
+import subprocess
+import sys
+subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib", "scipy"])
+
 import struct
 from abc import ABC, abstractmethod
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy
+import sys
+import subprocess
+import matplotlib
 import scipy.signal
 
 class Stream:
@@ -786,11 +794,207 @@ class Signal:
             for i in range(2, len(orig)):
                 orig[i] = orig[i] + 2 * orig[i - 1] - orig[i - 2]
             self.signal = orig
-
         
         self.amplitude_multiplier = amplitude_multiplier * 0.000000001
         self.name = name
         self.sample_time_interval = sample_time_interval
+    
+    def detrend(self) -> 'Signal':
+        """
+        Returns a new Signal with the linear trend removed.
+        """
+        detrended_signal = scipy.signal.detrend(self.signal)
+        return Signal(self.name, detrended_signal, self.sample_time_interval, self.amplitude_multiplier / 0.000000001, 0)
+    
+    def smooth_outliers(self, window_size=5, threshold=3) -> 'Signal':
+        """
+        Returns a new Signal with outliers at the beginning and end smoothed out.
+        Outliers are defined as points more than `threshold` standard deviations from the mean
+        in the first and last `window_size` samples.
+        """
+        signal = self.signal.copy()
+        n = len(signal)
+        # Smooth start
+        start_window = signal[:window_size]
+        mean = np.mean(start_window)
+        std = np.std(start_window)
+        for i in range(window_size):
+            if abs(signal[i] - mean) > threshold * std:
+                # Replace with mean of next window_size values (or as many as available)
+                next_vals = signal[i+1:i+1+window_size]
+                if len(next_vals) > 0:
+                    signal[i] = np.mean(next_vals)
+                else:
+                    signal[i] = mean
+        # Smooth end
+        end_window = signal[-window_size:]
+        mean = np.mean(end_window)
+        std = np.std(end_window)
+        for i in range(n - window_size, n):
+            if abs(signal[i] - mean) > threshold * std:
+                prev_vals = signal[max(0, i-window_size):i]
+                if len(prev_vals) > 0:
+                    signal[i] = np.mean(prev_vals)
+                else:
+                    signal[i] = mean
+        return Signal(self.name, signal, self.sample_time_interval, self.amplitude_multiplier / 0.000000001, 0)
+    
+    def aggressive_smooth_outliers(self, window_size=10, threshold=1) -> 'Signal':
+        """
+        Returns a new Signal with aggressive outlier smoothing based on the first difference.
+        Outliers are detected where the difference between consecutive samples exceeds the threshold.
+        Outliers are replaced by the median of a window around them.
+        """
+        signal = self.signal.copy()
+        n = len(signal)
+        diffs = np.diff(signal, prepend=signal[0])
+
+        # Forward pass
+        for i in range(n):
+            start = max(0, i - window_size // 2)
+            end = min(n, i + window_size // 2 + 1)
+            window = signal[start:end]
+            diff_window = diffs[start:end]
+            median = np.median(window)
+            std_diff = np.std(diff_window)
+            if std_diff > 0 and abs(diffs[i]) > threshold * std_diff:
+                signal[i] = median
+
+        # Backward pass
+        diffs = np.diff(signal, prepend=signal[0])
+        for i in reversed(range(n)):
+            start = max(0, i - window_size // 2)
+            end = min(n, i + window_size // 2 + 1)
+            window = signal[start:end]
+            diff_window = diffs[start:end]
+            median = np.median(window)
+            std_diff = np.std(diff_window)
+            if std_diff > 0 and abs(diffs[i]) > threshold * std_diff:
+                signal[i] = median
+
+        return Signal(self.name, signal, self.sample_time_interval, self.amplitude_multiplier / 0.000000001, 0)
+    
+    def fix_edge_outliers(self, edge_size=100, threshold=1, max_derivative=3) -> 'Signal':
+        """
+        Detects outlier zones at the start and end of the signal, and replaces them
+        by extrapolating from the nearest good data using the lowest derivative that fits.
+        """
+        signal = self.signal.copy()
+        n = len(signal)
+
+        def find_outlier_zone(arr, from_start=True):
+            window = arr[:edge_size] if from_start else arr[-edge_size:]
+            mean = np.mean(window)
+            std = np.std(window)
+            if std == 0:
+                return 0
+            if from_start:
+                for i in range(edge_size):
+                    if abs(arr[i] - mean) > threshold * std:
+                        return i
+                return edge_size
+            else:
+                for i in range(edge_size):
+                    if abs(arr[-(i+1)] - mean) > threshold * std:
+                        return i
+                return edge_size
+
+        # Find outlier zones
+        start_zone = find_outlier_zone(signal, from_start=True)
+        end_zone = find_outlier_zone(signal, from_start=False)
+
+        # Fix start
+        if start_zone > 0:
+            good_start = start_zone
+            for d in range(1, max_derivative+1):
+                if good_start + d >= n:
+                    break
+                # Fit polynomial of degree d to next edge_size points
+                x = np.arange(good_start, good_start + edge_size)
+                y = signal[good_start:good_start + edge_size]
+                coeffs = np.polyfit(x, y, min(d, len(x)-1))
+                for i in range(good_start):
+                    signal[i] = np.polyval(coeffs, i)
+                # Stop at first derivative that fits
+                break
+
+        # Fix end
+        if end_zone > 0:
+            good_end = n - end_zone
+            for d in range(1, max_derivative+1):
+                if good_end - edge_size < 0:
+                    break
+                x = np.arange(good_end - edge_size, good_end)
+                y = signal[good_end - edge_size:good_end]
+                coeffs = np.polyfit(x, y, min(d, len(x)-1))
+                for i in range(good_end, n):
+                    signal[i] = np.polyval(coeffs, i)
+                break
+
+        return Signal(self.name, signal, self.sample_time_interval, self.amplitude_multiplier / 0.000000001, 0)
+    
+    def remove_edge_outliers(self, edge_size=100, threshold=1) -> 'Signal':
+        """
+        Detects outlier zones at the start and end of the signal and removes these zones entirely.
+        Returns a new Signal with the outlier zones removed.
+        """
+        signal = self.signal.copy()
+        n = len(signal)
+
+        def find_outlier_zone(arr, from_start=True):
+            window = arr[:edge_size] if from_start else arr[-edge_size:]
+            mean = np.mean(window)
+            std = np.std(window)
+            if std == 0:
+                return 0
+            if from_start:
+                for i in range(edge_size):
+                    if abs(arr[i] - mean) > threshold * std:
+                        return i
+                return edge_size
+            else:
+                for i in range(edge_size):
+                    if abs(arr[-(i+1)] - mean) > threshold * std:
+                        return i
+                return edge_size
+
+        # Find outlier zones
+        start_zone = find_outlier_zone(signal, from_start=True)
+        end_zone = find_outlier_zone(signal, from_start=False)
+
+        # Remove the zones
+        new_signal = signal[start_zone:n-end_zone] if end_zone > 0 else signal[start_zone:]
+
+        return Signal(self.name, new_signal, self.sample_time_interval, self.amplitude_multiplier / 0.000000001, 0)
+    
+    def remove_rogue_beginning(self, threshold=5) -> 'Signal':
+        """
+        Removes samples at the beginning of the signal that are too low or too high compared to the rest of the signal.
+        A sample is considered rogue if it is more than `threshold` standard deviations from the mean of the signal (excluding the first 5%).
+        """
+        signal = self.signal.copy()
+        n = len(signal)
+        # Use the main body of the signal (excluding first 5%) to compute mean and std
+        start_idx = max(int(n * 0.05), 1)
+        main_body = signal[start_idx:]
+        mean = np.mean(main_body)
+        std = np.std(main_body)
+        # Find first index where value is within threshold*std of mean
+        idx = 0
+        while idx < n and abs(signal[idx] - mean) > threshold * std:
+            idx += 1
+        # Remove rogue beginning
+        new_signal = signal[idx:] if idx > 0 else signal
+        return Signal(self.name, new_signal, self.sample_time_interval, self.amplitude_multiplier / 0.000000001, 0)
+    
+    def attempt_fix(self):
+        """
+        Applies a series of fixes to the signal:
+        1. Detrend the signal.
+        2. Aggressively smooth outliers.
+        3. Fix edge outliers.
+        """
+        return self.detrend().smooth_outliers().aggressive_smooth_outliers().fix_edge_outliers().remove_edge_outliers().remove_rogue_beginning().detrend()
     
 class Data:
     def __init__(self, path:str):
@@ -802,6 +1006,7 @@ class Data:
         self.data5 = []
         self.data6 = []
         for s5, s6, lead in zip(file.get_section(5).samples, file.get_section(6).samples, file.get_section(3).leads):
+            is_first = s6 == file.get_section(6).samples[0]
             self.data5.append(Signal(lead.name, s5, file.get_section(5).sample_time_interval, avm5, file.get_section(5).difference_encoding))
             self.data6.append(Signal(lead.name, s6, file.get_section(6).sample_time_interval, avm6, file.get_section(6).difference_encoding))
 
@@ -815,7 +1020,7 @@ class Data:
 
     def draw_graph(self, file, signal=0, section=6, length=2 ** 30):
         s = self.data6[signal] if section == 6 else self.data5[signal]
-        samples = s.signal[:min(len(s.signal), length)]
+        samples = s.attempt_fix().signal[:min(len(s.signal), length)]
         print(f"Displaying {len(samples)} samples.")
         sample_time_interval = s.sample_time_interval * 0.000001
         self.plot_samples(samples, title=f"ECG Signal {s.name}", sample_time_interval=sample_time_interval, section=section, index=signal)
